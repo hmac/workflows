@@ -1,0 +1,5 @@
+.stack-work/
+*~
+.envrc
+dist/
+dist-newstyle/
