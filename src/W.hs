@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
 
-module W (W, label, fork, split, run, focus, _1) where
+module W (W (..), label, fork, split, run, focus, _1) where
 
 import Control.Applicative
 import Control.Arrow
@@ -92,12 +92,18 @@ instance (Monoid l, Applicative f) => Arrow (W l f) where
 instance (Monoid l, Applicative f) => ArrowChoice (W l f) where
   left = left'
 
--- All the power of the constructors is represented in the typeclass instances
 fork :: (Monoid l, Applicative f) => (W l f a (Either b c)) -> W l f b d -> W l f c d -> W l f a d
-fork split l r = rmap (either id id) (split >>> left' l >>> right' r)
+fork = Fork mempty
 
 split :: (Monoid l, Applicative f) => (a -> (b, c)) -> ((e, h) -> d) -> W l f b e -> W l f c h -> W l f a d
-split pair unpair l r =
+split = Split mempty
+
+-- All the power of the constructors is represented in the typeclass instances
+fork_ :: (Monoid l, Applicative f) => (W l f a (Either b c)) -> W l f b d -> W l f c d -> W l f a d
+fork_ split l r = rmap (either id id) (split >>> left' l >>> right' r)
+
+split_ :: (Monoid l, Applicative f) => (a -> (b, c)) -> ((e, h) -> d) -> W l f b e -> W l f c h -> W l f a d
+split_ pair unpair l r =
   arr pair >>> first' l >>> second' r >>> arr unpair
 
 -- In order to compose workflows it seems like we need f to be a Monad
@@ -125,13 +131,6 @@ depth (Pure _ _) = 1
 depth (Compose _ f g) = 1 + (depth f) + (depth g)
 depth (Split _ _ _ l r) = 1 + max (depth l) (depth r)
 depth (Fork _ _ l r) = 1 + max (depth l) (depth r)
-
--- Replace all inputs and outputs with ()
-petrify :: (Monoid l, Applicative f) => W l f a b -> W l f () ()
-petrify (Pure l f) = Pure l (pure . const ())
-petrify (Compose l a b) = Compose l (petrify a) (petrify b)
-petrify (Split l split join a b) = Split l (const ((), ())) (const ()) (petrify a) (petrify b)
-petrify (Fork l split a b) = Fork l (arr (const (Right ()))) (petrify a) (petrify b)
 
 instance Show l => Show (W l f i o) where
   show (Pure l _) = show l
