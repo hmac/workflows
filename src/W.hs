@@ -33,17 +33,17 @@ data W l f i o
   = -- A single function from input to ouput
     Pure l (i -> f o)
   | -- A composition of two workflows
-    forall a. Compose (W l f a o) (W l f i a)
+    forall a. Compose l (W l f a o) (W l f i a)
   | -- Run two workflows in parallel on different parts of the input, joining their outputs
     forall a b c d. Split l (i -> (a, b)) ((c, d) -> o) (W l f a c) (W l f b d)
   | -- Run one of two workflows, based on the input
-    forall a b. Fork (W l f i (Either a b)) (W l f a o) (W l f b o)
+    forall a b. Fork l (W l f i (Either a b)) (W l f a o) (W l f b o)
 
 label :: l -> W l f i o -> W l f i o
 label l (Pure _ f) = Pure l f
-label _ (Compose f g) = Compose f g
+label l (Compose _ f g) = Compose l f g
 label l (Split _ split join left right) = Split l split join left right
-label _ (Fork split left right) = Fork split left right
+label l (Fork _ split left right) = Fork l split left right
 
 -- Each constructor corresponds to an ability represented by an existing
 -- profunctor 'transformer':
@@ -55,9 +55,9 @@ label _ (Fork split left right) = Fork split left right
 -- i -> o is a profunctor, so W is a profunctor (if f is a functor)
 instance (Monoid l, Applicative f) => Profunctor (W l f) where
   dimap f g (Pure l c) = Pure l $ dimap f (fmap g) c
-  dimap f g (Compose a b) = Compose (rmap g a) (lmap f b)
+  dimap f g (Compose l a b) = Compose l (rmap g a) (lmap f b)
   dimap f g (Split l split join left right) = Split l (split . f) (g . join) left right
-  dimap f g (Fork cond left right) = Fork (cond . arr f) (rmap g left) (rmap g right)
+  dimap f g (Fork l cond left right) = Fork l (cond . arr f) (rmap g left) (rmap g right)
 
 instance (Monoid l, Applicative f) => Functor (W l f i) where
   fmap = rmap
@@ -72,7 +72,7 @@ instance (Monoid l, Applicative f) => Strong (W l f) where
 
 -- ...with the ability to make choices
 instance (Monoid l, Applicative f) => Choice (W l f) where
-  left' w = Fork id (rmap Left w) (rmap Right id)
+  left' w = Fork mempty id (rmap Left w) (rmap Right id)
 
 -- but it does not appear to be a closed profunctor
 -- instance Applicative f => Closed (W l f)
@@ -80,7 +80,7 @@ instance (Monoid l, Applicative f) => Choice (W l f) where
 -- Similarly, W is a Category
 instance (Monoid l, Applicative f) => Category (W l f) where
   id = Pure mempty pure
-  (.) = Compose
+  (.) = Compose mempty
 
 -- and an Arrow
 instance (Monoid l, Applicative f) => Arrow (W l f) where
@@ -93,8 +93,8 @@ instance (Monoid l, Applicative f) => ArrowChoice (W l f) where
   left = left'
 
 -- All the power of the constructors is represented in the typeclass instances
-fork :: (Monoid l, Applicative f) => (a -> Either b c) -> W l f b d -> W l f c d -> W l f a d
-fork split l r = rmap (either id id) (arr split >>> left' l >>> right' r)
+fork :: (Monoid l, Applicative f) => (W l f a (Either b c)) -> W l f b d -> W l f c d -> W l f a d
+fork split l r = rmap (either id id) (split >>> left' l >>> right' r)
 
 split :: (Monoid l, Applicative f) => (a -> (b, c)) -> ((e, h) -> d) -> W l f b e -> W l f c h -> W l f a d
 split pair unpair l r =
@@ -103,11 +103,11 @@ split pair unpair l r =
 -- In order to compose workflows it seems like we need f to be a Monad
 run :: Monad f => W l f i o -> i -> f o
 run (Pure _ f) = f
-run (Compose f g) = run f <=< run g
+run (Compose _ f g) = run f <=< run g
 run (Split _ split join left right) = \x ->
   let (l, r) = split x
    in curry join <$> run left l <*> run right r
-run (Fork cond left right) = \x ->
+run (Fork _ cond left right) = \x ->
   run cond x >>= \case
     Left l -> run left l
     Right r -> run right r
@@ -116,28 +116,28 @@ run (Fork cond left right) = \x ->
 
 steps :: W l f i o -> Int
 steps (Pure _ _) = 1
-steps (Compose f g) = 1 + steps f + steps g
+steps (Compose _ f g) = 1 + steps f + steps g
 steps (Split _ _ _ left right) = 1 + steps left + steps right
-steps (Fork _ left right) = 1 + steps left + steps right
+steps (Fork _ _ left right) = 1 + steps left + steps right
 
 depth :: W l f i o -> Int
 depth (Pure _ _) = 1
-depth (Compose f g) = 1 + (depth f) + (depth g)
+depth (Compose _ f g) = 1 + (depth f) + (depth g)
 depth (Split _ _ _ l r) = 1 + max (depth l) (depth r)
-depth (Fork _ l r) = 1 + max (depth l) (depth r)
+depth (Fork _ _ l r) = 1 + max (depth l) (depth r)
 
 -- Replace all inputs and outputs with ()
 petrify :: (Monoid l, Applicative f) => W l f a b -> W l f () ()
 petrify (Pure l f) = Pure l (pure . const ())
-petrify (Compose a b) = Compose (petrify a) (petrify b)
+petrify (Compose l a b) = Compose l (petrify a) (petrify b)
 petrify (Split l split join a b) = Split l (const ((), ())) (const ()) (petrify a) (petrify b)
-petrify (Fork split a b) = Fork (arr (const (Right ()))) (petrify a) (petrify b)
+petrify (Fork l split a b) = Fork l (arr (const (Right ()))) (petrify a) (petrify b)
 
 instance Show l => Show (W l f i o) where
   show (Pure l _) = show l
-  show (Compose f g) = "(" <> show f <> " . " <> show g <> ")"
+  show (Compose l f g) = "([" <> show l <> "] " <> show f <> " . " <> show g <> ")"
   show (Split l _ _ f g) = "(parallel [" <> show l <> "] " <> show f <> " " <> show g <> ")"
-  show (Fork cond f g) = "(cond [" <> show cond <> "] " <> show f <> " " <> show g <> ")"
+  show (Fork l cond f g) = "(" <> show l <> " if " <> show cond <> " then " <> show f <> " else " <> show g <> ")"
 
 -- Can we use this to label workflows?
 -- Not sure - we don't want labels to be visible to the workflows themselves.
