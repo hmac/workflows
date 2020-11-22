@@ -1,5 +1,6 @@
 {-# LANGUAGE Arrows #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
 
 module W (W, fork, split, run, focus, _1) where
@@ -9,6 +10,8 @@ import Control.Arrow
 import Control.Category
 import Control.Monad ((<=<))
 import Data.Profunctor
+import Data.Profunctor.Choice
+import Data.Profunctor.Strong
 import Lens
 import Prelude hiding (id, (.))
 
@@ -29,16 +32,16 @@ data W f i o
   = -- A single function from input to ouput
     Pure (i -> f o)
   | -- A composition of two workflows
-    forall j. Compose (W f j o) (W f i j)
+    forall a. Compose (W f a o) (W f i a)
   | -- Run two workflows in parallel on different parts of the input, joining their outputs
-    forall i1 i2 o1 o2. Split (i -> (i1, i2)) ((o1, o2) -> o) (W f i1 o1) (W f i2 o2)
+    forall a b c d. Split (i -> (a, b)) ((c, d) -> o) (W f a c) (W f b d)
   | -- Run one of two workflows, based on the input
-    forall i1 i2. Fork (i -> Either i1 i2) (W f i1 o) (W f i2 o)
+    forall a b. Fork (i -> Either a b) (W f a o) (W f b o)
 
 -- Each constructor corresponds to an ability represented by an existing
 -- profunctor 'transformer':
 -- Pure    ~ Star
--- Compose ~ ?
+-- Compose ~ Procompose
 -- Split   ~ Pastro (ish)
 -- Fork    ~ PastroSum (ish)
 
