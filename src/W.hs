@@ -35,12 +35,26 @@ data W f i o
   | -- Run one of two workflows, based on the input
     forall i1 i2. Fork (i -> Either i1 i2) (W f i1 o) (W f i2 o)
 
+-- Each constructor corresponds to an ability represented by an existing
+-- profunctor 'transformer':
+-- Pure    ~ Star
+-- Compose ~ ?
+-- Split   ~ Pastro (ish)
+-- Fork    ~ PastroSum (ish)
+
 -- i -> o is a profunctor, so W is a profunctor (if f is a functor)
 instance Functor f => Profunctor (W f) where
   dimap f g (Pure c) = Pure $ dimap f (fmap g) c
   dimap f g (Compose a b) = Compose (rmap g a) (lmap f b)
   dimap f g (Split split join left right) = Split (split . f) (g . join) left right
   dimap f g (Fork cond left right) = Fork (cond . f) (rmap g left) (rmap g right)
+
+instance Functor f => Functor (W f i) where
+  fmap = rmap
+
+instance Applicative f => Applicative (W f i) where
+  pure = Pure . const . pure
+  wf <*> wx = Split (\i -> (i, i)) (\(f, x) -> f x) wf wx
 
 -- If f is an applicative functor, W is a strong profunctor
 instance Applicative f => Strong (W f) where
