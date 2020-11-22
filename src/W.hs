@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TupleSections #-}
 
-module W (W, fork, split, run, focus, _1) where
+module W (W, label, fork, split, run, focus, _1) where
 
 import Control.Applicative
 import Control.Arrow
@@ -28,15 +28,22 @@ import Prelude hiding (id, (.))
 -- Split and Fork at the branches.
 -- Are any of these constructors redundant?
 
-data W f i o
+-- Should labels only be on Pure nodes?
+data W l f i o
   = -- A single function from input to ouput
-    Pure (i -> f o)
+    Pure l (i -> f o)
   | -- A composition of two workflows
-    forall a. Compose (W f a o) (W f i a)
+    forall a. Compose (W l f a o) (W l f i a)
   | -- Run two workflows in parallel on different parts of the input, joining their outputs
-    forall a b c d. Split (i -> (a, b)) ((c, d) -> o) (W f a c) (W f b d)
+    forall a b c d. Split l (i -> (a, b)) ((c, d) -> o) (W l f a c) (W l f b d)
   | -- Run one of two workflows, based on the input
-    forall a b. Fork (i -> Either a b) (W f a o) (W f b o)
+    forall a b. Fork l (i -> Either a b) (W l f a o) (W l f b o)
+
+label :: l -> W l f i o -> W l f i o
+label l (Pure _ f) = Pure l f
+label _ (Compose f g) = Compose f g
+label l (Split _ split join left right) = Split l split join left right
+label l (Fork _ split left right) = Fork l split left right
 
 -- Each constructor corresponds to an ability represented by an existing
 -- profunctor 'transformer':
@@ -46,89 +53,90 @@ data W f i o
 -- Fork    ~ PastroSum (ish)
 
 -- i -> o is a profunctor, so W is a profunctor (if f is a functor)
-instance Functor f => Profunctor (W f) where
-  dimap f g (Pure c) = Pure $ dimap f (fmap g) c
+instance Functor f => Profunctor (W l f) where
+  dimap f g (Pure l c) = Pure l $ dimap f (fmap g) c
   dimap f g (Compose a b) = Compose (rmap g a) (lmap f b)
-  dimap f g (Split split join left right) = Split (split . f) (g . join) left right
-  dimap f g (Fork cond left right) = Fork (cond . f) (rmap g left) (rmap g right)
+  dimap f g (Split l split join left right) = Split l (split . f) (g . join) left right
+  dimap f g (Fork l cond left right) = Fork l (cond . f) (rmap g left) (rmap g right)
 
-instance Functor f => Functor (W f i) where
+instance Functor f => Functor (W l f i) where
   fmap = rmap
 
-instance Applicative f => Applicative (W f i) where
-  pure = Pure . const . pure
-  wf <*> wx = Split (\i -> (i, i)) (\(f, x) -> f x) wf wx
+instance (Monoid l, Applicative f) => Applicative (W l f i) where
+  pure = Pure mempty . const . pure
+  wf <*> wx = Split mempty (\i -> (i, i)) (\(f, x) -> f x) wf wx
 
 -- If f is an applicative functor, W is a strong profunctor
-instance Applicative f => Strong (W f) where
-  first' w = Split id id w id
+instance (Monoid l, Applicative f) => Strong (W l f) where
+  first' w = Split mempty id id w id
 
 -- ...with the ability to make choices
-instance Applicative f => Choice (W f) where
-  left' w = Fork id (rmap Left w) (rmap Right id)
+instance (Monoid l, Applicative f) => Choice (W l f) where
+  left' w = Fork mempty id (rmap Left w) (rmap Right id)
 
 -- but it does not appear to be a closed profunctor
--- instance Applicative f => Closed (W f)
+-- instance Applicative f => Closed (W l f)
 
 -- Similarly, W is a Category
-instance Applicative f => Category (W f) where
-  id = Pure pure
+instance (Monoid l, Applicative f) => Category (W l f) where
+  id = Pure mempty pure
   (.) = Compose
 
 -- and an Arrow
-instance Applicative f => Arrow (W f) where
-  arr f = Pure (pure . f)
-  first w = Split id id w id
+instance (Monoid l, Applicative f) => Arrow (W l f) where
+  arr f = Pure mempty (pure . f)
+  first w = Split mempty id id w id
 
 -- Workflows are able to branch, performing different actions depending on the input they are given
 
-instance Applicative f => ArrowChoice (W f) where
+instance (Monoid l, Applicative f) => ArrowChoice (W l f) where
   left = left'
 
 -- All the power of the constructors is represented in the typeclass instances
-fork :: Applicative f => (a -> Either b c) -> W f b d -> W f c d -> W f a d
+fork :: (Monoid l, Applicative f) => (a -> Either b c) -> W l f b d -> W l f c d -> W l f a d
 fork split l r = rmap (either id id) (arr split >>> left' l >>> right' r)
 
-split :: Applicative f => (a -> (b, c)) -> ((e, h) -> d) -> W f b e -> W f c h -> W f a d
+split :: (Monoid l, Applicative f) => (a -> (b, c)) -> ((e, h) -> d) -> W l f b e -> W l f c h -> W l f a d
 split pair unpair l r =
   arr pair >>> first' l >>> second' r >>> arr unpair
 
 -- In order to compose workflows it seems like we need f to be a Monad
-run :: Monad f => W f i o -> i -> f o
-run (Pure f) = f
+run :: Monad f => W l f i o -> i -> f o
+run (Pure _ f) = f
 run (Compose f g) = run f <=< run g
-run (Split split join left right) = \x ->
+run (Split _ split join left right) = \x ->
   let (l, r) = split x
    in curry join <$> run left l <*> run right r
-run (Fork cond left right) = \x -> case cond x of
+run (Fork _ cond left right) = \x -> case cond x of
   Left l -> run left l
   Right r -> run right r
 
 -- Some simple static analysis
 
-steps :: W f i o -> Int
-steps (Pure _) = 1
+steps :: W l f i o -> Int
+steps (Pure _ _) = 1
 steps (Compose f g) = 1 + steps f + steps g
-steps (Split _ _ left right) = 1 + steps left + steps right
-steps (Fork _ left right) = 1 + steps left + steps right
+steps (Split _ _ _ left right) = 1 + steps left + steps right
+steps (Fork _ _ left right) = 1 + steps left + steps right
 
-depth :: W f i o -> Int
-depth (Pure _) = 1
+depth :: W l f i o -> Int
+depth (Pure _ _) = 1
 depth (Compose f g) = 1 + (depth f) + (depth g)
-depth (Split _ _ l r) = 1 + max (depth l) (depth r)
-depth (Fork _ l r) = 1 + max (depth l) (depth r)
+depth (Split _ _ _ l r) = 1 + max (depth l) (depth r)
+depth (Fork _ _ l r) = 1 + max (depth l) (depth r)
 
-petrify :: Applicative f => W f a b -> W f () ()
-petrify (Pure f) = Pure (pure . const ())
+-- Replace all inputs and outputs with ()
+petrify :: Applicative f => W l f a b -> W l f () ()
+petrify (Pure l f) = Pure l (pure . const ())
 petrify (Compose a b) = Compose (petrify a) (petrify b)
-petrify (Split split join a b) = Split (const ((), ())) (const ()) (petrify a) (petrify b)
-petrify (Fork split a b) = Fork (const (Right ())) (petrify a) (petrify b)
+petrify (Split l split join a b) = Split l (const ((), ())) (const ()) (petrify a) (petrify b)
+petrify (Fork l split a b) = Fork l (const (Right ())) (petrify a) (petrify b)
 
-instance Applicative f => Show (W f () ()) where
-  show (Pure f) = "Pure"
-  show (Compose f g) = "(" <> show (petrify f) <> " . " <> show (petrify g) <> ")"
-  show (Split _ _ f g) = "(Split " <> show (petrify f) <> " " <> show (petrify g) <> ")"
-  show (Fork _ f g) = "(Fork " <> show (petrify f) <> " " <> show (petrify g) <> ")"
+instance Show l => Show (W l f i o) where
+  show (Pure l _) = show l
+  show (Compose f g) = "(" <> show f <> " . " <> show g <> ")"
+  show (Split l _ _ f g) = "(parallel [" <> show l <> "] " <> show f <> " " <> show g <> ")"
+  show (Fork l _ f g) = "(cond [" <> show l <> "] " <> show f <> " " <> show g <> ")"
 
 -- Can we use this to label workflows?
 -- Not sure - we don't want labels to be visible to the workflows themselves.
@@ -136,5 +144,5 @@ instance Applicative f => Show (W f () ()) where
 -- extensible...
 
 -- Using a lens we can focus a workflow on a particular component of the input
-focus :: Applicative f => Lens s t a b -> W f a b -> W f s t
-focus l w = Split (splitView l) (\(b, f) -> f b) w id
+focus :: (Monoid l, Applicative f) => Lens s t a b -> W l f a b -> W l f s t
+focus l w = Split mempty (splitView l) (\(b, f) -> f b) w id
