@@ -4,7 +4,7 @@ name:                workflows
 version:             0.1.0.0
 license-file:        LICENSE
 author:              Harry Maclean
-maintainer:          harry@hackworthltd.com
+maintainer:          harry@hmac.dev
 build-type:          Simple
 extra-source-files:  CHANGELOG.md
 
